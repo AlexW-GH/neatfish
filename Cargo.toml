@@ -1,0 +1,10 @@
+[package]
+name = "neatfish"
+version = "0.1.0"
+authors = ["alex"]
+edition = "2018"
+
+[dependencies]
+quicksilver = { version = "0.3.10", default-features = false, features = ["fonts"]}
+rand = {version = "0.7", features = ["stdweb"]}
+petgraph = "0.4.13"
