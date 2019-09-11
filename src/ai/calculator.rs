@@ -1,12 +1,15 @@
 use crate::ai::genome::Genome;
 use crate::ai::neat::GlobalConnections;
 use crate::ai::model::{NodeId, NodeGene};
+use fastapprox::faster::sigmoid;
+
+use std::f32::consts::LOG2_E;
 
 pub struct Calculator;
 
 impl Calculator{
     pub fn calculate(inputs: &[f32], genome: &Genome) -> Vec<f32>{
-        let mut calc_nodes = Self::generate_calculation_nodes(inputs, genome);
+        let mut calc_nodes = generate_calculation_nodes(inputs, genome);
         let mut output_nodes: Vec<CalcGene> = calc_nodes.iter()
             .filter(|node| match node.node {
                 NodeGene::OUTPUT(_) => true,
@@ -38,34 +41,34 @@ impl Calculator{
                 result += calculation;
             }
         }
-        result
+        sigmoid(result)
     }
+}
 
-    fn generate_calculation_nodes(inputs: &[f32], genome: &Genome) -> Vec<CalcGene> {
-        let nodes = genome.nodes();
-        let connections = genome.connections();
+fn generate_calculation_nodes(inputs: &[f32], genome: &Genome) -> Vec<CalcGene> {
+    let nodes = genome.nodes();
+    let connections = genome.connections();
 
-        nodes.iter().enumerate()
-            .map(|(index, node)| {
-                let node_id = node.id();
-                let value = match node {
-                    NodeGene::BIAS(_) => Some(1f32),
-                    NodeGene::INPUT(_) => Some(inputs[index-1]),
-                    NodeGene::OUTPUT(_) => None,
-                    NodeGene::HIDDEN(_) => None
-                };
-                let inputs = connections.iter()
-                    .filter(|weighted| weighted.connection.to.id() == node_id)
-                    .map(|weighted| (weighted.connection.from.id(), weighted.weight.value()))
-                    .collect();
+    nodes.iter().enumerate()
+        .map(|(index, node)| {
+            let node_id = node.id();
+            let value = match node {
+                NodeGene::BIAS(_) => Some(1f32),
+                NodeGene::INPUT(_) => Some(inputs[index-1]),
+                NodeGene::OUTPUT(_) => None,
+                NodeGene::HIDDEN(_) => None
+            };
+            let inputs = connections.iter()
+                .filter(|weighted| weighted.connection.to.id() == node_id)
+                .map(|weighted| (weighted.connection.from.id(), weighted.weight.value()))
+                .collect();
 
-                CalcGene {
-                    node: node.clone(),
-                    value,
-                    inputs,
-                }})
-            .collect()
-    }
+            CalcGene {
+                node: node.clone(),
+                value,
+                inputs,
+            }})
+        .collect()
 }
 
 #[derive(Clone)]

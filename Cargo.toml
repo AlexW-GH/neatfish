@@ -7,4 +7,5 @@ edition = "2018"
 [dependencies]
 quicksilver = { version = "0.3.10", default-features = false, features = ["fonts"]}
 rand = {version = "0.7", features = ["stdweb"]}
+fastapprox = "0.3"
 petgraph = "0.4.13"

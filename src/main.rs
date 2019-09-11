@@ -48,7 +48,7 @@ impl State for NeatGame {
 
         let game_size = Vector::new(MAP_SIZE_PX_X as f32, MAP_SIZE_PX_Y as f32);
 
-        let neat_bird = NeatBird::new(game_size, game_rules, 100, rng);
+        let neat_bird = NeatBird::new(game_size, game_rules, 50, rng);
 
         let game_window = GameWindow{};
         let control_window = ControlWindow{};
@@ -68,7 +68,7 @@ impl State for NeatGame {
             distance_numoff_disjoint_coefficient: 0.0,
             distance_average_weight_difference_coefficient: 0.0
         };
-        let neat = Neat::init(4, 2, 50, neat_params);
+        let neat = Neat::init(4, 1, 50, neat_params);
 
 
         Ok(Self { neat_bird, game_window, control_window, info_window, neat})
@@ -77,22 +77,27 @@ impl State for NeatGame {
     fn update(&mut self, window: &mut Window) -> Result<()> {
         use quicksilver::input::ButtonState::Pressed;
         let brains = self.neat.genomes();
-        //brains.iter().for_each(|brain| {
-            //let inputs = Vec::new();
-            //self.neat.decide(brain, &inputs);
-        //});
+        let decisions: Vec<bool> = brains.iter().map(|brain| {
+            let inputs = vec![1f32, 0f32, 1f32, 0f32];
+            self.neat.decide(brain, &inputs)
+        }).map(|output| {
+            if output[0] > 0.5f32{
+                true
+            } else {
+                false
+            }
+        }).collect();
         let keys_pressed = vec![
             window.keyboard()[Key::Space] == Pressed,
             window.keyboard()[Key::LControl] == Pressed
         ];
-        self.neat_bird.update_frame(&keys_pressed);
+        self.neat_bird.update_frame(&decisions);
 
         Ok(())
     }
 
     fn draw(&mut self, window: &mut Window) -> Result<()> {
         window.clear(Color::WHITE)?;
-        //window.set_blend_mode(BlendMode::Maximum);
 
         let walls = self.neat_bird.walls();
         let game_size = self.neat_bird.game_size();
