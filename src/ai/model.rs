@@ -87,18 +87,22 @@ pub struct Evaluation{
     pub fitness: usize,
 }
 
+#[derive(Debug)]
 pub(crate) struct Species{
     pub(crate) mascot: GenomeKey,
     pub(crate) genomes: Vec<Evaluation>,
 }
 
 impl Species{
-    pub(crate) fn remove_least_fit(&mut self, keep: usize){
+    pub(crate) fn remove_least_fit(&mut self){
         self.genomes.sort_by(|left, right| left.fitness.cmp(&right.fitness));
-        self.genomes = self.genomes.iter().enumerate()
-            .filter(|(index, eval)| *index < keep )
-            .map(|(index, eval)| eval.clone())
-            .collect();
-        self.mascot = self.genomes[0].genome.clone();
+        if self.genomes.len() > 2 {
+            let keep = self.genomes.len() / 2;
+            self.genomes = self.genomes.iter().enumerate()
+                .filter(|(index, eval)| *index < keep )
+                .map(|(index, eval)| eval.clone())
+                .collect();
+        }
+
     }
 }

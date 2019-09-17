@@ -4,51 +4,78 @@ use quicksilver::graphics::Color;
 use crate::game::MinMax;
 use std::collections::vec_deque::VecDeque;
 use rand::Rng;
-use rand::rngs::ThreadRng;
+use rand::SeedableRng;
 use std::cell::RefCell;
+use rand::rngs::StdRng;
+use crate::ai::{Evaluation, GenomeKey};
 
 pub struct NeatBird {
     walls: VecDeque<Wall>,
-    players: Vec<Player>,
+    players: Vec<(Player, Evaluation)>,
     game_size: Vector,
     covered_distance: usize,
     rules: GameRules,
     next_wall_spacing: usize,
     wall_spacing_counter: usize,
-    rng: ThreadRng,
+    rng: StdRng,
+    seed: [u8; 32],
 }
 
 impl NeatBird {
-    pub fn new(game_size: Vector, game_rules: GameRules, player_count: usize, mut rng: ThreadRng) -> NeatBird {
+    pub fn new(game_size: Vector, rules: GameRules, player_keys: &[GenomeKey], seed: &str) -> NeatBird {
+        let seed = {
+            let mut seed_array = [0u8; 32];
+            seed.as_bytes().iter()
+                .enumerate()
+                .filter(|(index, _)| *index < 32)
+                .for_each(|(index, byte)|{
+                    seed_array[index] = *byte;
+                });
+            seed_array
+        };
+
+        let mut rng = SeedableRng::from_seed(seed);
         let mut players = Vec::new();
-        for i in 0 .. player_count{
+        for player in player_keys.iter(){
             players.push(
-                Player {
-                    flap_power: 0f32,
-                    pos_y: 15f32,
-                    width: 24f32,
-                    color: Color::RED,
-                    alive: true,
-                }
+                (
+                    Player {
+                        flap_power: 0f32,
+                        pos_y: 15f32,
+                        width: 24f32,
+                        color: Color::RED,
+                        alive: true,
+                    }, Evaluation{ genome: player.clone(), fitness: 0 })
             );
         };
         let covered_distance = 1;
-        let mut walls = VecDeque::new();
-        walls.push_back(
-            Wall{
-                top: game_size.y/3f32,
-                bot: game_size.y/3f32,
-                pos_x: game_size.x/2f32,
-                width: game_size.x/3f32,
-                color: Color::BLACK
-            }
-        );
-        let next_wall_spacing = generate_wall_spacing(&game_rules, &mut rng);
+        let walls = NeatBird::create_initial_walls(game_size, &rules, &mut rng);
+        let next_wall_spacing = generate_wall_spacing(&rules, &mut rng);
         let wall_spacing_counter = 0;
-        NeatBird {players, walls, game_size, covered_distance, rules: game_rules, next_wall_spacing, wall_spacing_counter, rng}
+        NeatBird {players, walls, game_size, covered_distance, rules, next_wall_spacing, wall_spacing_counter, rng, seed}
     }
 
-    pub fn update_frame(&mut self, flaps: &[bool]){
+    fn create_initial_walls(game_size: Vector, rules: &GameRules, rng: &mut impl Rng) -> VecDeque<Wall> {
+        let mut walls = VecDeque::new();
+        let mut next_wall_pos = rules.wall_spacing_max as f32;
+        while next_wall_pos < game_size.x {
+            let top_size = rng.gen_range(rules.wall_hole_pos_top_min, rules.wall_hole_pos_top_max) as f32;
+            let bot_size = game_size.y as f32 - (top_size + rng.gen_range(rules.wall_hole_size_min, rules.wall_hole_size_max) as f32);
+            walls.push_back(
+                Wall {
+                    top: top_size,
+                    bot: bot_size,
+                    pos_x: next_wall_pos,
+                    width: rules.wall_width_min as f32,
+                    color: Color::BLACK
+                }
+            );
+            next_wall_pos += rules.wall_spacing_max as f32;
+        }
+        walls
+    }
+
+    pub fn update_frame(&mut self, flaps: &[bool]) -> bool {
         self.wall_spacing_counter += 1;
         self.covered_distance += 1;
         if self.wall_spacing_counter % self.next_wall_spacing == 0 {
@@ -60,35 +87,37 @@ impl NeatBird {
 
         let mut collisions = Vec::new();
         for i in 0 .. self.players.len(){
-            let pos_y = self.players[i].pos_y;
-            let width = self.players[i].width;
+            let pos_y = self.players[i].0.pos_y;
+            let width = self.players[i].0.width;
             collisions.push(self.check_collision(pos_y, width))
         }
 
-        if self.players.iter().filter(|player| player.alive).count() <= 0 {
-            self.reset();
+        if self.players.iter().filter(|player| player.0.alive).count() <= 0 {
+            return true
         }
 
         for (index, player) in self.players.iter_mut().enumerate() {
             if collisions[index]{
-                player.alive = false;
+                player.0.alive = false;
+                player.1.fitness = self.covered_distance;
             }
-            if player.alive {
+            if player.0.alive {
                 if flaps.len() > index && flaps[index] {
-                    player.flap_power += 9f32;
+                    player.0.flap_power += 9f32;
                 }
 
                 let new_pos_y = f32::min_max(
-                    player.pos_y + (self.rules.gravity - player.flap_power),
+                    player.0.pos_y + (self.rules.gravity - player.0.flap_power),
                     0f32,
-                    self.game_size.y - player.width
+                    self.game_size.y - player.0.width
                 );
 
-                let flap_power = player.flap_power - self.rules.flap_decay;
-                player.flap_power = f32::min_max(flap_power, 0f32, 9f32);
-                player.pos_y = new_pos_y;
+                let flap_power = player.0.flap_power - self.rules.flap_decay;
+                player.0.flap_power = f32::min_max(flap_power, 0f32, 9f32);
+                player.0.pos_y = new_pos_y;
             }
         }
+        false
     }
 
     pub fn generate_wall(&mut self) -> Wall {
@@ -126,33 +155,45 @@ impl NeatBird {
         }
     }
 
-    fn reset(&mut self) {
-        self.walls = VecDeque::new();
-        self.walls.push_back(
-            Wall{
-                top: self.game_size.y/3f32,
-                bot: self.game_size.y/3f32,
-                pos_x: self.game_size.x/1.5f32,
-                width: self.game_size.x/4f32,
-                color: Color::BLACK
-            }
-        );
+    pub fn reset(&mut self) {
+        let rng: StdRng = SeedableRng::from_seed(self.seed);
+        self.walls = Self::create_initial_walls(self.game_size, &self.rules, &mut self.rng);
         self.covered_distance = 0;
         for player in self.players.iter_mut(){
-            player.flap_power = 0f32;
-            player.pos_y = 200f32;
-            player.width = 24f32;
-            player.color = Color::RED;
-            player.alive = true;
+            player.0.flap_power = 0f32;
+            player.0.pos_y = 200f32;
+            player.0.width = 24f32;
+            player.0.color = Color::RED;
+            player.0.alive = true;
         }
+    }
+
+    pub fn next_wall(&self) -> Option<&Wall> {
+        self.walls.front()
     }
 
     pub fn walls(&self) -> impl Iterator<Item = &Wall> + '_ {
         self.walls.as_slices().0.iter().chain(self.walls.as_slices().1)
     }
 
-    pub fn players(&self) -> &[Player] {
+    pub fn players(&self) -> &[(Player, Evaluation)] {
         &self.players
+    }
+
+    pub fn set_players(&mut self, player_keys: &[GenomeKey]) {
+        self.players.clear();
+        for player in player_keys.iter(){
+            self.players.push(
+                (
+                    Player {
+                        flap_power: 0f32,
+                        pos_y: 15f32,
+                        width: 24f32,
+                        color: Color::RED,
+                        alive: true,
+                    }, Evaluation{ genome: player.clone(), fitness: 0 })
+            );
+        };
     }
 
     pub fn covered_distance(&self) -> usize {
@@ -180,6 +221,6 @@ pub struct GameRules {
     pub wall_hole_pos_top_max: usize,
 }
 
-fn generate_wall_spacing(game_rules: &GameRules, rng: &mut ThreadRng) -> usize {
+fn generate_wall_spacing(game_rules: &GameRules, rng: &mut impl Rng) -> usize {
     rng.gen_range(game_rules.wall_spacing_min, game_rules.wall_spacing_max)
 }

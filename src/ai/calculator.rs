@@ -33,7 +33,7 @@ impl Calculator{
         for input in node.inputs.iter() {
             let input_value = all_nodes[input.0.value()].value;
             if let Some(value) = input_value {
-                result += value;
+                result += (value * input.1);
             } else {
                 let input_node = all_nodes[input.0.value()].clone();
                 let calculation = Self::calculate_internal(input_node, all_nodes);
@@ -71,7 +71,7 @@ fn generate_calculation_nodes(inputs: &[f32], genome: &Genome) -> Vec<CalcGene> 
         .collect()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CalcGene {
     node: NodeGene,
     value: Option<f32>,

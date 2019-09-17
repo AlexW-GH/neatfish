@@ -10,7 +10,7 @@ pub struct Genome {
 }
 
 impl Genome {
-    pub(crate) fn init(input_nodes: usize, output_nodes: usize, global_connections: &mut GlobalConnections, rng: &mut impl Rng) -> Self {
+    pub(crate) fn init(input_nodes: usize, output_nodes: usize, global_connections: &mut GlobalConnections, params: &Parameters, rng: &mut impl Rng) -> Self {
         let mut nodes = Vec::with_capacity(input_nodes + output_nodes + 1);
         let mut connections = Vec::new();
 
@@ -23,7 +23,9 @@ impl Genome {
         }
 
         let mut genome = Genome{nodes, connections};
-        while !genome.mutate_link(global_connections, rng){}
+
+        while !genome.mutate_link(global_connections, params, rng){}
+
         genome
     }
 
@@ -83,7 +85,7 @@ impl Genome {
             crossover_nodes.insert(required_node.clone());
         }
         let mut crossover_nodes: Vec<NodeGene> = crossover_nodes.into_iter().collect();
-        crossover_nodes.sort();
+        crossover_nodes.sort_by(|a, b| a.id().value().cmp(&b.id().value()));
 
         Genome{
             nodes: crossover_nodes,
@@ -95,17 +97,28 @@ impl Genome {
     pub(crate) fn mutate(&self, global_connections: &mut GlobalConnections, params: &Parameters, rng: &mut impl Rng) -> Self {
         let mut mutate = self.clone();
 
-        let mut tries = 0;
-        while mutate.mutate_link(global_connections, rng) && tries < params.mutate_link_tries {
-            tries += 1;
+        if rng.gen_range(1, 100) >= params.mutate_link_percent_chance {
+            let mut tries = 0;
+            while mutate.mutate_link(global_connections, params, rng) && (tries < params.mutate_link_tries) {
+                tries += 1;
+            }
         }
-        mutate.mutate_node(global_connections, rng);
-        mutate.mutate_weight(params, rng);
-        mutate.mutate_enabled(params, rng);
+
+        if rng.gen_range(1, 100) >= params.mutate_node_percent_chance {
+            mutate.mutate_node(global_connections, rng);
+        }
+
+        if rng.gen_range(1, 100) >= params.mutate_weight_percent_chance {
+            mutate.mutate_weight(params, rng);
+        }
+
+        if rng.gen_range(1, 100) >= params.mutate_enable_percent_chance {
+            mutate.mutate_enabled(params, rng);
+        }
         mutate
     }
 
-    pub(crate) fn mutate_link(&mut self, global_connections: &mut GlobalConnections, rng: &mut impl Rng) -> bool {
+    pub(crate) fn mutate_link(&mut self, global_connections: &mut GlobalConnections, params: &Parameters, rng: &mut impl Rng) -> bool {
         let valid_from_nodes = self.nodes.iter()
             .filter(|node| {
                 match node {
@@ -115,46 +128,68 @@ impl Genome {
                     NodeGene::HIDDEN(_) => true,
                 }})
             .collect::<Vec<&NodeGene>>();
-
-        let nodes_count = self.nodes.len();
-
-        let node_from = valid_from_nodes[rng.gen_range(0, valid_from_nodes.len())];
-
         let valid_to_nodes = self.nodes.iter()
             .filter(|node| {
                 match node {
                     NodeGene::BIAS(_) => false,
                     NodeGene::INPUT(_) => false,
                     NodeGene::OUTPUT(_) => true,
-                    NodeGene::HIDDEN(to_node_id) =>
-                        match node_from {
-                            NodeGene::BIAS(_) => true,
-                            NodeGene::INPUT(_) => true,
-                            NodeGene::OUTPUT(_) => unreachable!(),
-                            NodeGene::HIDDEN(from_node_id) => from_node_id > to_node_id,
-                        },
+                    NodeGene::HIDDEN(_) => true
                 }})
             .collect::<Vec<&NodeGene>>();
-        let node_to = valid_to_nodes[rng.gen_range(0, valid_to_nodes.len())];
 
-
-        let found_connection = self.connections.iter()
-            .map(|connection| (connection.connection.from, connection.connection.to))
-            .find(|(from, to)| (from.id() == node_from.id()) && (to.id() == node_to.id()));
-
-        match found_connection {
-            Some(_) => false,
-            None => {
-                let mutated_connection = global_connections.get_connection(node_from, node_to);
-                let weight: f32 = rng.gen();
+        if valid_to_nodes.len() > 0 {
+            let node_from = valid_from_nodes[rng.gen_range(0, valid_from_nodes.len())];
+            let node_to = valid_to_nodes[rng.gen_range(0, valid_to_nodes.len())];
+            if Self::check_valid_connection(&self.connections, node_from, node_to) {
+                let connection = global_connections.get_connection(node_from, node_to);
+                let random_weight = rng.gen_range(
+                    params.weight_assign_range_min,
+                    params.weight_assign_range_max
+                );
                 self.connections.push(WeightedConnectionGene{
-                    connection: mutated_connection,
-                    weight: Weight(weight),
+                    connection,
+                    weight: Weight(random_weight),
                     enabled: true
                 });
                 true
+            } else {
+                false
             }
+        } else {
+            true
         }
+    }
+
+    fn check_valid_connection(existing_connections: &[WeightedConnectionGene], from: &NodeGene, to: &NodeGene) -> bool {
+        let equal_count = existing_connections.iter()
+            .filter(|weighted| weighted.connection.from == *from && weighted.connection.to == *to)
+            .count();
+        if equal_count > 0 {
+            return false;
+        }
+
+        let mut nodes_used = vec![to.id()];
+        Self::check_can_resolve_inputs(from.id(), existing_connections, &mut nodes_used)
+    }
+
+    fn check_can_resolve_inputs(node: NodeId, existing_connections: &[WeightedConnectionGene], nodes_used: &mut Vec<NodeId>) -> bool {
+        if !nodes_used.contains(&node) {
+            nodes_used.push(node);
+            let inputs = existing_connections.iter()
+                .filter(|weighted| weighted.connection.to.id() == node)
+                .map(|weighted| weighted.connection.from.id());
+
+            for input in inputs {
+                if !Self::check_can_resolve_inputs(input, existing_connections, nodes_used){
+                    return false
+                }
+            }
+            true
+        } else {
+            false
+        }
+
     }
 
     pub(crate) fn mutate_node(&mut self, global_connections: &mut GlobalConnections, rng: &mut impl Rng) {
@@ -169,53 +204,47 @@ impl Genome {
         self.connections.get_mut(selected_index).expect("").enabled = false;
         self.connections.push(WeightedConnectionGene{ connection: connection_to_new_node, weight: Weight(1f32), enabled: true });
         self.connections.push(WeightedConnectionGene{ connection: connection_from_new_node, weight: gene_to_mutate.weight, enabled: true });
+        self.nodes.push(last_node);
         self.nodes.push(new_node);
     }
 
     fn mutate_weight(&mut self, params: &Parameters, rng: &mut impl Rng) {
-
-        let mutation_occurs: usize = rng.gen_range(0, 101);
-        if mutation_occurs <= params.weight_mutate_percent_chance {
-            for mut connection in self.connections.iter_mut() {
-                let set_shift_occurs: usize = rng.gen_range(0, 101);
-                if set_shift_occurs <= params.weight_shift_percent_chance {
-                    let shift_value = rng.gen_range(
-                        params.weight_shift_range_min,
-                        params.weight_shift_range_max
-                    );
-                    connection.weight = connection.weight + shift_value;
-                } else {
-                    let random_value = rng.gen_range(
-                        params.weight_assign_range_min,
-                        params.weight_assign_range_max
-                    );
-                    connection.weight = Weight(random_value)
-                }
+        for mut connection in self.connections.iter_mut() {
+            let set_shift_occurs: usize = rng.gen_range(0, 101);
+            if set_shift_occurs <= params.weight_shift_percent_chance {
+                let shift_value = rng.gen_range(
+                    params.weight_shift_range_min,
+                    params.weight_shift_range_max
+                );
+                connection.weight = connection.weight + shift_value;
+            } else {
+                let random_value = rng.gen_range(
+                    params.weight_assign_range_min,
+                    params.weight_assign_range_max
+                );
+                connection.weight = Weight(random_value)
             }
         }
     }
 
     fn mutate_enabled(&mut self, params: &Parameters, rng: &mut impl Rng) {
-        let mutation_occurs: usize = rng.gen_range(0, 101);
-        if mutation_occurs <= params.enable_mutate_percent_chance {
-            let reenable_occurs: usize = rng.gen_range(0, 101);
-            if reenable_occurs <= params.reenable_percent_chance {
-                let mut disabled_connections: Vec<&WeightedConnectionGene> = self.connections.iter()
-                    .filter(|connection| !connection.enabled)
-                    .collect();
-                if disabled_connections.len() > 0 {
-                    let chosen_connection = rng.gen_range(0, disabled_connections.len());
-                    let id = disabled_connections[chosen_connection].connection.id;
-                    self.connections.iter_mut()
-                        .filter(|connection| connection.connection.id == id)
-                        .for_each(|connection| connection.enabled = true)
-                }
-            } else {
-                let connections_amount = self.connections.len();
-                if connections_amount > 0 {
-                    let chosen_connection = rng.gen_range(0, connections_amount);
-                    self.connections[chosen_connection].toggle()
-                }
+        let reenable_occurs: usize = rng.gen_range(0, 101);
+        if reenable_occurs <= params.reenable_percent_chance {
+            let mut disabled_connections: Vec<&WeightedConnectionGene> = self.connections.iter()
+                .filter(|connection| !connection.enabled)
+                .collect();
+            if disabled_connections.len() > 0 {
+                let chosen_connection = rng.gen_range(0, disabled_connections.len());
+                let id = disabled_connections[chosen_connection].connection.id;
+                self.connections.iter_mut()
+                    .filter(|connection| connection.connection.id == id)
+                    .for_each(|connection| connection.enabled = true)
+            }
+        } else {
+            let connections_amount = self.connections.len();
+            if connections_amount > 0 {
+                let chosen_connection = rng.gen_range(0, connections_amount);
+                self.connections[chosen_connection].toggle()
             }
         }
     }
@@ -325,9 +354,9 @@ mod tests {
 
     const TEST_PARAMETERS: Parameters = Parameters {
         mutate_link_tries: 0,
-        enable_mutate_percent_chance: 0,
+        mutate_enable_percent_chance: 0,
         reenable_percent_chance: 0,
-        weight_mutate_percent_chance: 0,
+        mutate_weight_percent_chance: 0,
         weight_shift_percent_chance: 0,
         weight_shift_range_min: 0.0,
         weight_shift_range_max: 0.0,
@@ -618,7 +647,7 @@ mod tests {
         genome.mutate_node(&mut global_connections, &mut fake_rng);
 
         assert_eq!(genome.connections.len(), 5);
-        assert_eq!(genome.nodes.len(), 4);
+        assert_eq!(genome.nodes.len(), 5);
 
         assert_connection(&genome, 0, 0.5, true, 0, 3, 0);
         assert_connection(&genome, 1, 0.5, false, 1, 3, 1);
@@ -642,7 +671,7 @@ mod tests {
         genome.mutate_node(&mut global_connections, &mut fake_rng);
 
         assert_eq!(genome.connections.len(), 5);
-        assert_eq!(genome.nodes.len(), 4);
+        assert_eq!(genome.nodes.len(), 5);
 
         assert_connection(&genome, 0, 0.5, true, 0, 3, 0);
         assert_connection(&genome, 1, 0.5, true, 1, 3, 1);
@@ -666,7 +695,7 @@ mod tests {
         genome.mutate_node(&mut global_connections, &mut fake_rng);
 
         assert_eq!(genome.connections.len(), 5);
-        assert_eq!(genome.nodes.len(), 4);
+        assert_eq!(genome.nodes.len(), 5);
 
         assert_connection(&genome, 0, 0.5, true, 0, 3, 0);
         assert_connection(&genome, 1, 0.5, false, 1, 3, 1);

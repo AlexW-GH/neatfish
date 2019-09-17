@@ -3,13 +3,18 @@ use crate::ai::genome::Genome;
 use std::collections::HashMap;
 use rand::prelude::ThreadRng;
 use crate::ai::calculator::Calculator;
+use std::cmp::Ordering;
+use rand::Rng;
 
 #[derive(Debug, Clone)]
 pub struct Parameters {
+    pub asexual_reproduction_percent_chance: usize,
+    pub mutate_link_percent_chance: usize,
+    pub mutate_node_percent_chance: usize,
     pub mutate_link_tries: usize,
-    pub enable_mutate_percent_chance: usize,
+    pub mutate_enable_percent_chance: usize,
     pub reenable_percent_chance: usize,
-    pub weight_mutate_percent_chance: usize,
+    pub mutate_weight_percent_chance: usize,
     pub weight_shift_percent_chance: usize,
     pub weight_shift_range_min: f32,
     pub weight_shift_range_max: f32,
@@ -22,8 +27,8 @@ pub struct Parameters {
 }
 
 pub(crate) struct GlobalConnections{
-    next_innovation: usize,
-    connections: HashMap<(NodeId, NodeId), ConnectionGene>,
+    pub(crate) next_innovation: usize,
+    pub(crate) connections: HashMap<(NodeId, NodeId), ConnectionGene>,
 }
 
 impl GlobalConnections{
@@ -60,7 +65,7 @@ impl Neat {
         let mut genomes = Vec::new();
         let mut rng = rand::thread_rng();
         for i in 0 .. initial_population{
-            let genome = Genome::init(input_nodes, output_nodes, &mut connections, &mut rng);
+            let genome = Genome::init(input_nodes, output_nodes, &mut connections, &params, &mut rng);
             genomes.push(genome);
         }
         let current_generation = 0;
@@ -82,20 +87,64 @@ impl Neat {
         if wrong_generation > 0 {
             panic!("Evaluation from wrong generation found");
         }
+        let genome_count = evaluations.len();
 
         self.current_generation += 1;
-        let species_list = self.place_genomes_into_species(evaluations);
-
-        let mut mutations = Vec::new();
-        for genome in self.genomes.iter(){
-            let mutated = genome.mutate(&mut self.connections, &self.params, &mut self.rng);
-            mutations.push(mutated);
+        let mut species_list = self.place_genomes_into_species(evaluations);
+        let mut next_generation_genomes = Vec::with_capacity(genome_count);
+        let average_fitness: f32 = species_list.iter()
+            .map(|species| species.genomes.iter()
+                .map(|genome| genome.fitness)
+                .fold(0f32,|acc,fitness| acc + fitness as f32))
+            .fold(0f32, |acc, fitness| acc + fitness as f32) / genome_count as f32;
+        for mut species in species_list.iter_mut(){
+            //println!("evolve species {:?}", species);
+            let mascot = self.genomes[species.mascot.index].clone();
+            next_generation_genomes.push(mascot);
+            let genome_count = species.genomes.len() as f32;
+            let average_species_fitness = species.genomes.iter()
+                .fold(0f32, |acc, genome| {
+                    //println!("avg species calc: {} + {}", acc, genome.fitness);
+                    acc + genome.fitness as f32
+                }) / genome_count;
+            println!("avg_species / avg = ? | {} / {} = {}", average_species_fitness, average_fitness, average_species_fitness / average_fitness);
+            let target_genomes = ((average_species_fitness / average_fitness) * (genome_count)).round() as usize;
+            println!("target genome count: {}, before: {}", target_genomes, genome_count);
+            species.remove_least_fit();
+            for _ in 1 .. target_genomes {
+                //let evaluation = Self::select_random_genome(&species.genomes, &mut self.rng);
+                let evaluation = &species.genomes[0];
+                let genome = &self.genomes[evaluation.genome.index];
+                if self.rng.gen_range(0, 100) < self.params.asexual_reproduction_percent_chance{
+                    let new_genome = genome.mutate(&mut self.connections, &self.params, &mut self.rng);
+                    next_generation_genomes.push(new_genome)
+                } else {
+                    let evaluation_partner = Self::select_random_genome(&species.genomes, &mut self.rng);
+                    let partner = &self.genomes[evaluation_partner.genome.index];
+                    let new_genome = if evaluation.fitness >= evaluation_partner.fitness {
+                        genome.crossover(&partner, &mut self.rng)
+                    } else {
+                        partner.crossover(&genome, &mut self.rng)
+                    };
+                    let mutated = new_genome.mutate(&mut self.connections, &self.params, &mut self.rng);
+                    next_generation_genomes.push(mutated);
+                }
+            }
         }
-        unimplemented!()
+        println!("speciescount; {}", species_list.len());
+        println!("evolve stop: {} genomes", next_generation_genomes.len());
+        self.genomes = next_generation_genomes;
     }
 
-    fn place_genomes_into_species(&mut self, evaluations: Vec<Evaluation>) -> Vec<Species> {
+    fn select_random_genome<'a>(genomes: &'a [Evaluation], rng: &mut impl Rng) -> &'a Evaluation{
+        let count = genomes.len();
+        let index = rng.gen_range(0, count);
+        &genomes[index]
+    }
+
+    fn place_genomes_into_species(&mut self, mut evaluations: Vec<Evaluation>) -> Vec<Species> {
         let mut species_list: Vec<Species> = Vec::new();
+        evaluations.sort_by(|a, b| a.fitness.cmp(&b.fitness).reverse());
         for evaluated in evaluations.into_iter(){
             let mut matching_species = None;
             for species in species_list.iter_mut(){
